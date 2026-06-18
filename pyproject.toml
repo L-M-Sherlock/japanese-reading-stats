@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "japanese-reading-stats"
+version = "0.1.0"
+description = "Generate a local HTML report from Books reading statistics."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+japanese-reading-stats = "scripts.visualize_books:main"
+
+[tool.setuptools.packages.find]
+include = ["scripts"]

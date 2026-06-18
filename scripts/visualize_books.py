@@ -1718,28 +1718,61 @@ def render_html(payload: dict[str, Any]) -> str:
       }});
     }}
 
+    function aggregateDailySummaryRows(stats) {{
+      const map = new Map();
+      for (const stat of stats) {{
+        const label = stat.date;
+        if (!map.has(label)) {{
+          map.set(label, {{
+            label,
+            charactersRead: 0,
+            readingTimeHours: 0,
+            readingTimeSeconds: 0,
+            speedCharacters: 0,
+            speedTimeSeconds: 0,
+            recordCount: 0,
+          }});
+        }}
+        const row = map.get(label);
+        row.charactersRead += Number(stat.charactersRead || 0);
+        row.readingTimeHours += Number(stat.readingTimeHours || 0);
+        row.readingTimeSeconds += Number(stat.readingTimeSeconds || 0);
+        row.speedCharacters += Number(stat.speedCharacters || 0);
+        row.speedTimeSeconds += Number(stat.speedTimeSeconds || 0);
+        row.recordCount += 1;
+      }}
+      return Array.from(map.values())
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .map((row) => ({{
+          ...row,
+          speed: row.speedTimeSeconds > 0 && row.speedCharacters > 0
+            ? row.speedCharacters / (row.speedTimeSeconds / 3600)
+            : null,
+        }}));
+    }}
+
     function filteredSummary(books, rows) {{
       const totalChars = books.reduce((sum, book) => sum + Number(book.totalCharacters || 0), 0);
       const recorded = books.reduce((sum, book) => sum + Number(book.recordedCharacters || 0), 0);
       const hours = books.reduce((sum, book) => sum + Number(book.readingTimeHours || 0), 0);
       const allStats = filteredStats(books);
+      const dailySummaryRows = aggregateDailySummaryRows(allStats);
       const speedStats = allStats.filter((stat) => stat.speed !== null);
       const speedChars = speedStats.reduce((sum, stat) => sum + Number(stat.speedCharacters || 0), 0);
       const speedSeconds = speedStats.reduce((sum, stat) => sum + Number(stat.speedTimeSeconds || 0), 0);
-      const validSpeedRows = rows.filter((row) => row.speed !== null);
+      const validSpeedRows = dailySummaryRows.filter((row) => row.speed !== null);
       const recent7 = validSpeedRows.slice(-7);
-      const activeDays = new Set(allStats.map((stat) => stat.date)).size;
       return {{
         bookCount: books.length,
         statsBooks: books.filter((book) => book.hasStatistics).length,
         totalChars,
         recorded,
         hours,
-        activeDays,
+        activeDays: dailySummaryRows.length,
         avgSpeed: speedSeconds > 0 && speedChars > 0 ? speedChars / (speedSeconds / 3600) : null,
         medianSpeed: median(validSpeedRows.map((row) => row.speed)),
         recentSpeed: weightedSpeed(recent7),
-        range: rows.length ? `${{rows[0].label}} - ${{rows[rows.length - 1].label}}` : '-',
+        range: dailySummaryRows.length ? `${{dailySummaryRows[0].label}} - ${{dailySummaryRows[dailySummaryRows.length - 1].label}}` : '-',
       }};
     }}
 
@@ -1828,7 +1861,9 @@ def render_html(payload: dict[str, Any]) -> str:
 
     function renderChart(rows) {{
       const svg = document.getElementById('trendChart');
-      const width = Math.max(980, rows.length * 42 + 150);
+      const shell = document.querySelector('.chart-shell');
+      const containerWidth = Math.max(980, Math.floor(shell.getBoundingClientRect().width));
+      const width = Math.max(containerWidth, rows.length * 42 + 150);
       const height = 460;
       const margin = {{ top: 36, right: 34, bottom: 118, left: 96 }};
       const plotW = width - margin.left - margin.right;

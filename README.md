@@ -1,7 +1,9 @@
 # Japanese Reading Stats
 
-Generate a local HTML report from the data stored under Apple Books-style
-folders in `~/Library/Application Support/Books`.
+Generate a local HTML report from reading statistics produced by
+[Hoshi Reader Mac](https://github.com/W1ght/Hoshi-Reader-Mac). The parser is
+also compatible with the data layout used by
+[ebook-reader](https://github.com/ttu-ttu/ebook-reader).
 
 The report focuses on reading progress, reading time, and reading speed changes.
 It is intentionally static: one Python command reads the JSON files and writes a
@@ -13,7 +15,7 @@ self-contained HTML report.
 uv run scripts/visualize_books.py
 ```
 
-By default, this reads:
+By default, this reads Hoshi Reader Mac / ebook-reader data from:
 
 ```text
 ~/Library/Application Support/Books

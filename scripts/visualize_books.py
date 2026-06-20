@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import html
 import json
 import math
-import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -17,7 +15,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 LOCAL_OUTLIER_WINDOW_SIZE = 15
 LOCAL_OUTLIER_MIN_POINTS = 8
 MIN_READING_TIME_SECONDS = 60
@@ -56,7 +53,6 @@ class BookRecord:
     folder_name: str
     folder_path: Path
     epub_name: str = ""
-    cover_path: Path | None = None
     total_characters: int = 0
     progress: float | None = None
     chapter_index: int | None = None
@@ -259,27 +255,6 @@ def build_shelf_map(books_dir: Path) -> tuple[dict[str, list[str]], list[str]]:
     return dict(shelf_map), sorted(set(shelf_names))
 
 
-def locate_cover(book_dir: Path, metadata: dict[str, Any], books_dir: Path) -> Path | None:
-    raw_cover = str(metadata.get("cover") or "").strip()
-    candidates: list[Path] = []
-    if raw_cover:
-        raw_path = Path(raw_cover)
-        candidates.append(book_dir / raw_path.name)
-        if raw_path.parts and raw_path.parts[0] == books_dir.name:
-            candidates.append(books_dir.parent / raw_path)
-        candidates.append(books_dir / raw_path)
-    for child in sorted(book_dir.iterdir()):
-        if child.is_file() and child.suffix.casefold() in IMAGE_SUFFIXES:
-            if child.name.casefold().startswith(("cover", "folder")):
-                candidates.append(child)
-            else:
-                candidates.append(child)
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return None
-
-
 def count_chapters(chapter_info: Any) -> int:
     if isinstance(chapter_info, dict):
         return len(chapter_info)
@@ -290,7 +265,6 @@ def count_chapters(chapter_info: Any) -> int:
 
 def load_book(
     book_dir: Path,
-    books_dir: Path,
     shelf_map: dict[str, list[str]],
     time_zone,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
@@ -330,7 +304,6 @@ def load_book(
         folder_name=str(metadata.get("folder") or book_dir.name),
         folder_path=book_dir,
         epub_name=str(metadata.get("epub") or ""),
-        cover_path=locate_cover(book_dir, metadata, books_dir),
         total_characters=total_characters,
         progress=progress,
         chapter_index=chapter_index,
@@ -405,7 +378,7 @@ def load_library(
     for child in sorted(books_dir.iterdir(), key=lambda path: path.name.casefold()):
         if not child.is_dir():
             continue
-        book = load_book(child, books_dir, shelf_map, time_zone, min_reading_seconds)
+        book = load_book(child, shelf_map, time_zone, min_reading_seconds)
         if book is not None:
             books.append(book)
     return LibraryData(books_dir=books_dir, books=books, shelves=shelf_names)
@@ -594,43 +567,18 @@ def build_summary(books: list[BookRecord], daily_rows: list[dict[str, Any]]) -> 
     }
 
 
-def prepare_cover_urls(
-    books: list[BookRecord],
-    output_path: Path,
-    copy_covers: bool,
-) -> dict[str, str]:
-    cover_urls: dict[str, str] = {}
-    if copy_covers:
-        cover_dir = output_path.parent / "assets" / "covers"
-        cover_dir.mkdir(parents=True, exist_ok=True)
-    for book in books:
-        if not book.cover_path or not book.cover_path.exists():
-            cover_urls[book.id] = ""
-            continue
-        if copy_covers:
-            digest = hashlib.sha1(book.id.encode("utf-8")).hexdigest()[:12]
-            suffix = book.cover_path.suffix.casefold() or ".jpg"
-            target = output_path.parent / "assets" / "covers" / f"{digest}{suffix}"
-            shutil.copy2(book.cover_path, target)
-            cover_urls[book.id] = target.relative_to(output_path.parent).as_posix()
-        else:
-            cover_urls[book.id] = book.cover_path.resolve().as_uri()
-    return cover_urls
-
-
 def round_or_none(value: float | None, digits: int = 2) -> float | None:
     if value is None:
         return None
     return round(value, digits)
 
 
-def book_to_payload(book: BookRecord, cover_url: str) -> dict[str, Any]:
+def book_to_payload(book: BookRecord) -> dict[str, Any]:
     return {
         "id": book.id,
         "title": book.title,
         "folder": book.folder_name,
         "epub": book.epub_name,
-        "cover": cover_url,
         "shelves": book.shelves,
         "totalCharacters": book.total_characters,
         "recordedCharacters": round(book.recorded_characters, 2),
@@ -674,23 +622,20 @@ def stat_to_payload(stat: ReadingStat) -> dict[str, Any]:
 def build_report_payload(
     library: LibraryData,
     time_zone_label: str,
-    cover_urls: dict[str, str] | None = None,
     generated_at: datetime | None = None,
     top_n: int = 20,
 ) -> dict[str, Any]:
-    cover_urls = cover_urls or {}
     daily_rows = aggregate_daily(library.stats)
     summary = build_summary(library.books, daily_rows)
     generated_at = generated_at or datetime.now().astimezone()
     return {
         "generatedAt": generated_at.strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "booksDir": str(library.books_dir),
         "timezone": time_zone_label,
         "topN": top_n,
         "shelves": library.shelves,
         "summary": summary,
         "books": [
-            book_to_payload(book, cover_urls.get(book.id, ""))
+            book_to_payload(book)
             for book in sorted(library.books, key=lambda item: item.title.casefold())
         ],
         "stats": [
@@ -1792,7 +1737,6 @@ def render_html(payload: dict[str, Any]) -> str:
     function renderMeta() {{
       const summary = reportData.summary;
       const chips = [
-        `${{t('source')}}: ${{reportData.booksDir}}`,
         `${{t('timezone')}}: ${{reportData.timezone}}`,
         `${{t('generated')}}: ${{reportData.generatedAt}}`,
         `${{t('range')}}: ${{summary.dateStart || '-'}} - ${{summary.dateEnd || '-'}}`,
@@ -2087,17 +2031,14 @@ def generate_report(
     output_path: Path,
     time_zone,
     top_n: int = 20,
-    copy_covers: bool = False,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
 ) -> tuple[Path, dict[str, Any]]:
     library = load_library(books_dir, time_zone, min_reading_seconds)
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cover_urls = prepare_cover_urls(library.books, output_path, copy_covers)
     payload = build_report_payload(
         library,
         timezone_display_name(time_zone),
-        cover_urls=cover_urls,
         top_n=top_n,
     )
     output_path.write_text(render_html(payload), encoding="utf-8")
@@ -2112,7 +2053,6 @@ def main() -> int:
         args.output,
         time_zone,
         top_n=args.top,
-        copy_covers=False,
         min_reading_seconds=args.min_reading_seconds,
     )
     summary = payload["summary"]

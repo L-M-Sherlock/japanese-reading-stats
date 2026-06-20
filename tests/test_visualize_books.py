@@ -224,14 +224,17 @@ class BooksReportTest(unittest.TestCase):
                 Path(root),
                 output,
                 ZoneInfo("UTC"),
-                copy_covers=False,
             )
             self.assertEqual(generated, output.resolve())
             self.assertEqual(payload["summary"]["booksWithStats"], 2)
+            self.assertNotIn("booksDir", payload)
+            self.assertNotIn("cover", payload["books"][0])
             html = output.read_text(encoding="utf-8")
             self.assertIn("report-data", html)
             self.assertIn("Books Reading Report", html)
             self.assertIn("速度摘要", html)
+            self.assertNotIn("booksDir", html)
+            self.assertNotIn('"cover"', html)
 
 
 if __name__ == "__main__":

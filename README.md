@@ -19,7 +19,7 @@ self-contained HTML report.
 uv run scripts/visualize_books.py
 ```
 
-By default, this reads Hoshi Reader Mac / ebook-reader data from:
+By default, this reads Hoshi Reader Mac data from:
 
 ```text
 ~/Library/Application Support/Books

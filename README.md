@@ -9,6 +9,10 @@ The report focuses on reading progress, reading time, and reading speed changes.
 It is intentionally static: one Python command reads the JSON files and writes a
 self-contained HTML report.
 
+## Preview
+
+![English report preview](assets/report-preview-en.png)
+
 ## Usage
 
 ```bash

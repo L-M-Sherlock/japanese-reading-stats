@@ -11,10 +11,13 @@ from scripts.visualize_books import (
     APPLE_EPOCH,
     ReadingStat,
     aggregate_daily,
+    build_pages_branch_name,
     build_report_payload,
     generate_report,
+    infer_profile_name_from_books_dir,
     load_library,
     period_labels,
+    render_pages_index,
 )
 
 
@@ -235,6 +238,19 @@ class BooksReportTest(unittest.TestCase):
             self.assertIn("速度摘要", html)
             self.assertNotIn("booksDir", html)
             self.assertNotIn('"cover"', html)
+
+    def test_pages_publish_helpers(self) -> None:
+        self.assertEqual(
+            infer_profile_name_from_books_dir(
+                Path("/tmp/Library/Application Support/Books")
+            ),
+            "Books",
+        )
+        self.assertEqual(build_pages_branch_name("Books"), "reports/Books")
+        self.assertEqual(build_pages_branch_name("public", "pages/"), "pages/public")
+        index_html = render_pages_index("Books")
+        self.assertIn("Japanese Reading Stats - Books", index_html)
+        self.assertIn("books_reading_report.html", index_html)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ import argparse
 import html
 import json
 import math
+import shutil
+import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -150,6 +153,35 @@ def parse_args() -> argparse.Namespace:
             "Default: %(default)s"
         ),
     )
+    parser.add_argument(
+        "--publish-pages",
+        action="store_true",
+        help=(
+            "After writing the local report, commit a minimal static site to a "
+            "profile-specific Git branch and push it for GitHub Pages."
+        ),
+    )
+    parser.add_argument(
+        "--pages-remote",
+        default="origin",
+        help="Git remote used by --publish-pages. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--pages-branch-prefix",
+        default="reports/",
+        help=(
+            "Prefix for the published branch. The profile name is appended to "
+            "this value. Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--profile-name",
+        default="",
+        help=(
+            "Profile name used for the published branch. If omitted, it is "
+            "inferred from the Books data directory name."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -206,6 +238,181 @@ def resolve_timezone(timezone_name: str):
 
 def timezone_display_name(time_zone) -> str:
     return str(getattr(time_zone, "key", None) or time_zone)
+
+
+def run_git(
+    args: list[str],
+    *,
+    cwd: Path,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        command = " ".join(["git", *args])
+        raise SystemExit(f"Git command failed: {command}\n{detail}")
+    return result
+
+
+def git_output(args: list[str], *, cwd: Path) -> str:
+    return run_git(args, cwd=cwd).stdout.strip()
+
+
+def infer_profile_name_from_books_dir(books_dir: Path) -> str:
+    profile_name = books_dir.expanduser().resolve().name.strip()
+    if not profile_name:
+        raise SystemExit(f"Could not infer profile name from Books path: {books_dir}")
+    return profile_name
+
+
+def build_pages_branch_name(profile_name: str, branch_prefix: str = "reports/") -> str:
+    branch = f"{branch_prefix}{profile_name.strip()}"
+    if not branch:
+        raise SystemExit("Published branch name is empty.")
+    return branch
+
+
+def validate_pages_branch_name(branch: str, *, repo_dir: Path | None = None) -> str:
+    repo_dir = repo_dir or Path.cwd()
+    result = run_git(["check-ref-format", "--branch", branch], cwd=repo_dir, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SystemExit(f"Invalid published branch name {branch!r}: {detail}")
+    return branch
+
+
+def render_pages_index(profile_name: str) -> str:
+    title = html.escape(f"Japanese Reading Stats - {profile_name}")
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fbf7ef;
+      color: #1c1f22;
+    }}
+    main {{
+      width: min(720px, calc(100vw - 40px));
+      border: 1px solid #d9d0c4;
+      border-radius: 8px;
+      background: #fffdf8;
+      padding: 28px;
+      box-shadow: 0 16px 40px rgba(46, 38, 28, 0.08);
+    }}
+    h1 {{ margin: 0 0 10px; font-size: 2rem; }}
+    p {{ color: #68717a; line-height: 1.5; }}
+    nav {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }}
+    a {{
+      color: #14665d;
+      text-decoration: none;
+      border: 1px solid #d9d0c4;
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: #f2eadf;
+      font-weight: 700;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{title}</h1>
+    <p>Open the generated reading statistics report.</p>
+    <nav>
+      <a href="books_reading_report.html">Reading report</a>
+    </nav>
+  </main>
+</body>
+</html>
+"""
+
+
+def clear_publish_worktree(worktree: Path) -> None:
+    for child in worktree.iterdir():
+        if child.name == ".git":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def publish_report_to_pages(
+    *,
+    report_path: Path,
+    books_dir: Path,
+    remote: str = "origin",
+    branch_prefix: str = "reports/",
+    profile_name: str = "",
+    repo_dir: Path | None = None,
+) -> str:
+    if not report_path.exists():
+        raise SystemExit(f"Report does not exist: {report_path}")
+
+    repo_dir = (repo_dir or Path.cwd()).resolve()
+    profile = profile_name.strip() or infer_profile_name_from_books_dir(books_dir)
+    branch = validate_pages_branch_name(
+        build_pages_branch_name(profile, branch_prefix), repo_dir=repo_dir
+    )
+    remote_url = git_output(["remote", "get-url", remote], cwd=repo_dir)
+
+    with tempfile.TemporaryDirectory(prefix="japanese-reading-pages-") as temp_root:
+        publish_dir = Path(temp_root) / "site"
+        publish_dir.mkdir()
+        run_git(["init"], cwd=publish_dir)
+        run_git(["config", "user.name", "Japanese Reading Stats"], cwd=publish_dir)
+        run_git(
+            ["config", "user.email", "japanese-reading-stats@example.invalid"],
+            cwd=publish_dir,
+        )
+        run_git(["remote", "add", remote, remote_url], cwd=publish_dir)
+
+        fetch_result = run_git(
+            [
+                "fetch",
+                "--depth=1",
+                remote,
+                f"refs/heads/{branch}:refs/remotes/{remote}/{branch}",
+            ],
+            cwd=publish_dir,
+            check=False,
+        )
+        if fetch_result.returncode == 0:
+            run_git(
+                ["checkout", "-B", branch, f"refs/remotes/{remote}/{branch}"],
+                cwd=publish_dir,
+            )
+        else:
+            run_git(["checkout", "--orphan", branch], cwd=publish_dir)
+
+        clear_publish_worktree(publish_dir)
+        (publish_dir / "index.html").write_text(
+            render_pages_index(profile), encoding="utf-8"
+        )
+        shutil.copy2(report_path, publish_dir / "books_reading_report.html")
+
+        if git_output(["status", "--porcelain"], cwd=publish_dir):
+            run_git(["add", "--all"], cwd=publish_dir)
+            run_git(
+                ["commit", "-m", f"Update reading report for {profile}"],
+                cwd=publish_dir,
+            )
+        run_git(["push", remote, f"HEAD:refs/heads/{branch}"], cwd=publish_dir)
+
+    return branch
 
 
 def apple_seconds_to_datetime(value: Any, time_zone) -> datetime | None:
@@ -2064,6 +2271,15 @@ def main() -> int:
         f"reading hours: {summary['totalReadingHours']:.2f}, "
         f"active days: {summary['activeDays']}"
     )
+    if args.publish_pages:
+        branch = publish_report_to_pages(
+            report_path=output_path,
+            books_dir=args.books_dir,
+            remote=args.pages_remote,
+            branch_prefix=args.pages_branch_prefix,
+            profile_name=args.profile_name,
+        )
+        print(f"Pushed GitHub Pages report to branch {branch!r}.")
     return 0
 
 

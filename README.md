@@ -37,6 +37,43 @@ uv run scripts/visualize_books.py \
   --top 20
 ```
 
+## Publishing to GitHub Pages
+
+You can opt in to publishing the generated report to a branch for GitHub Pages:
+
+```bash
+uv run scripts/visualize_books.py \
+  --books-dir "$HOME/Library/Application Support/Books" \
+  --publish-pages
+```
+
+By default this infers the profile name from the Books data directory name, then
+pushes a static site branch named `reports/<profile>`. For the default path, the
+branch is `reports/Books`.
+
+The published branch contains only:
+
+- `index.html`: a small landing page linking to the report
+- `books_reading_report.html`
+
+Publishing options:
+
+- `--publish-pages`: enable the publish step after local report generation
+- `--pages-remote`: git remote to push to, default `origin`
+- `--pages-branch-prefix`: branch prefix, default `reports/`
+- `--profile-name`: override the inferred profile name
+
+One-time GitHub Pages setup:
+
+1. Open the repository on GitHub.
+2. Go to `Settings -> Pages`.
+3. Set `Build and deployment` to `Deploy from a branch`.
+4. Select the generated branch, for example `reports/Books`.
+5. Select folder `/root`.
+
+The report HTML contains your book titles, shelf names, and reading statistics.
+If the repository is public, the published GitHub Pages site is public too.
+
 ## What It Shows
 
 - Total books, total characters, recorded characters read, reading hours, active

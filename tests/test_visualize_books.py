@@ -14,6 +14,7 @@ from scripts.visualize_books import (
     build_pages_branch_name,
     build_report_payload,
     generate_report,
+    GITHUB_REPO_URL,
     infer_profile_name_from_books_dir,
     load_library,
     period_labels,
@@ -236,6 +237,8 @@ class BooksReportTest(unittest.TestCase):
             self.assertIn("report-data", html)
             self.assertIn("Books Reading Report", html)
             self.assertIn("速度摘要", html)
+            self.assertIn(GITHUB_REPO_URL, html)
+            self.assertIn('aria-label="GitHub repository"', html)
             self.assertNotIn("booksDir", html)
             self.assertNotIn('"cover"', html)
 

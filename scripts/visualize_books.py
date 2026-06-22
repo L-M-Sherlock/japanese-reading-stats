@@ -297,33 +297,46 @@ def render_pages_index(profile_name: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <style>
+    :root {{
+      --bg: #f6f4ef;
+      --surface: #fffdf8;
+      --surface-2: #f0ede6;
+      --ink: #202326;
+      --muted: #626a70;
+      --line: #d8d1c4;
+      --accent: #176b62;
+      --shadow: 0 10px 28px rgba(31, 35, 38, 0.07);
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
     body {{
       margin: 0;
       min-height: 100vh;
       display: grid;
       place-items: center;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #fbf7ef;
-      color: #1c1f22;
+      background: var(--bg);
+      color: var(--ink);
     }}
     main {{
       width: min(720px, calc(100vw - 40px));
-      border: 1px solid #d9d0c4;
+      border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fffdf8;
+      background: var(--surface);
       padding: 28px;
-      box-shadow: 0 16px 40px rgba(46, 38, 28, 0.08);
+      box-shadow: var(--shadow);
     }}
     h1 {{ margin: 0 0 10px; font-size: 2rem; }}
-    p {{ color: #68717a; line-height: 1.5; }}
+    p {{ color: var(--muted); line-height: 1.5; }}
     nav {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }}
     a {{
-      color: #14665d;
+      color: var(--accent);
       text-decoration: none;
-      border: 1px solid #d9d0c4;
+      border: 1px solid var(--line);
       border-radius: 999px;
       padding: 10px 16px;
-      background: #f2eadf;
+      background: var(--surface-2);
       font-weight: 700;
     }}
   </style>
@@ -873,7 +886,7 @@ def render_html(payload: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Books Reading Report</title>
+  <title>阅读统计报告</title>
   <style>
     :root {{
       --bg: #f6f4ef;
@@ -1323,8 +1336,9 @@ def render_html(payload: dict[str, Any]) -> str:
         </div>
       </div>
       <div class="meta" id="metaChips"></div>
-      <div class="summary" id="summaryCards"></div>
     </header>
+
+    <section class="summary" id="summaryCards"></section>
 
     <section class="panel">
       <h2><span class="lang lang-zh">筛选和趋势</span><span class="lang lang-en">Filters And Trends</span></h2>
@@ -1423,6 +1437,10 @@ def render_html(payload: dict[str, Any]) -> str:
       rank: 'characters',
       shelf: 'all',
       query: '',
+    }};
+    const pageTitles = {{
+      zh: '阅读统计报告',
+      en: 'Books Reading Report',
     }};
     const chartTooltip = document.createElement('div');
     chartTooltip.className = 'chart-tooltip';
@@ -1609,14 +1627,20 @@ def render_html(payload: dict[str, Any]) -> str:
       }});
     }}
 
+    function applyLanguage(lang) {{
+      state.lang = lang === 'en' ? 'en' : 'zh';
+      root.dataset.lang = state.lang;
+      root.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
+      document.title = pageTitles[state.lang];
+      document.querySelectorAll('[data-lang-set]').forEach((item) => {{
+        item.classList.toggle('active', item.dataset.langSet === state.lang);
+      }});
+    }}
+
     function setupControls() {{
       document.querySelectorAll('[data-lang-set]').forEach((button) => {{
         button.addEventListener('click', () => {{
-          state.lang = button.dataset.langSet;
-          root.dataset.lang = state.lang;
-          document.querySelectorAll('[data-lang-set]').forEach((item) => {{
-            item.classList.toggle('active', item.dataset.langSet === state.lang);
-          }});
+          applyLanguage(button.dataset.langSet);
           render();
         }});
       }});

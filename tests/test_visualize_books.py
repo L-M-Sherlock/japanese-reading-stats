@@ -235,10 +235,15 @@ class BooksReportTest(unittest.TestCase):
             self.assertNotIn("cover", payload["books"][0])
             html = output.read_text(encoding="utf-8")
             self.assertIn("report-data", html)
+            self.assertIn("<title>阅读统计报告</title>", html)
             self.assertIn("Books Reading Report", html)
             self.assertIn("速度摘要", html)
             self.assertIn(GITHUB_REPO_URL, html)
             self.assertIn('aria-label="GitHub repository"', html)
+            self.assertIn("document.title = pageTitles[state.lang]", html)
+            self.assertIn("--surface-2: #f0ede6", html)
+            self.assertIn("font-family: ui-sans-serif", html)
+            self.assertIn('id="summaryCards"></section>', html)
             self.assertNotIn("booksDir", html)
             self.assertNotIn('"cover"', html)
 
@@ -254,6 +259,9 @@ class BooksReportTest(unittest.TestCase):
         index_html = render_pages_index("Books")
         self.assertIn("Japanese Reading Stats - Books", index_html)
         self.assertIn("books_reading_report.html", index_html)
+        self.assertIn("--surface-2: #f0ede6", index_html)
+        self.assertIn("font-family: ui-sans-serif", index_html)
+        self.assertIn("border-radius: 8px", index_html)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from unittest.mock import patch
 
 from scripts.visualize_books import (
     APPLE_EPOCH,
+    DEFAULT_BOOKS_DIR,
     ReadingStat,
     aggregate_daily,
     build_pages_branch_name,
@@ -18,6 +20,7 @@ from scripts.visualize_books import (
     infer_profile_name_from_books_dir,
     load_library,
     period_labels,
+    parse_args,
     render_pages_index,
 )
 
@@ -164,6 +167,132 @@ class BooksReportTest(unittest.TestCase):
 
     def test_period_labels(self) -> None:
         self.assertEqual(period_labels("2026-01-02"), ("2026-01-02", "2026-W01", "2026-01"))
+
+    def test_default_source_is_hoshi_reader_desktop(self) -> None:
+        with patch("sys.argv", ["visualize_books.py"]):
+            self.assertEqual(parse_args().books_dir, DEFAULT_BOOKS_DIR)
+            self.assertEqual(parse_args().day_start_hour, 5)
+        self.assertEqual(
+            DEFAULT_BOOKS_DIR,
+            Path("~/Library/Application Support/de.manhhao.hoshi/Books"),
+        )
+
+    def test_desktop_sessions_and_metadata(self) -> None:
+        def millis(hour: int, minute: int = 0) -> int:
+            return int(datetime(2026, 1, 1, hour, minute, tzinfo=timezone.utc).timestamp() * 1000)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            book_dir = root / "Desktop Book"
+            book_dir.mkdir()
+            (root / "shelves.json").write_text(json.dumps({
+                "Desktop Shelf": {"modified": 1, "value": 0},
+                "Deleted Shelf": {"modified": 2, "value": None},
+            }), encoding="utf-8")
+            (book_dir / "metadata.json").write_text(json.dumps({
+                "id": "desktop-book", "title": "Desktop Book", "characterCount": 7000,
+                "lastAccess": -63114076800.0,
+                "shelves": {
+                    "Desktop Shelf": {"modified": 1, "value": True},
+                    "Removed Membership": {"modified": 2, "value": False},
+                },
+            }), encoding="utf-8")
+            (book_dir / "bookmark.json").write_text(json.dumps({
+                "progress": 0.5, "characterCount": 100,
+            }), encoding="utf-8")
+            sessions = {
+                "evening": {"modified": millis(16, 31), "value": {
+                    "startedAt": millis(15, 30), "endedAt": millis(16, 30),
+                    "charactersRead": 300, "readingTime": 3600,
+                }},
+                "morning": {"modified": millis(1, 10), "value": {
+                    "startedAt": millis(1), "endedAt": millis(1, 10),
+                    "charactersRead": 100, "readingTime": 600,
+                }},
+                "deleted": {"modified": millis(17), "value": None},
+                "short": {"modified": millis(2), "value": {
+                    "startedAt": millis(2), "endedAt": millis(2) + 10000,
+                    "charactersRead": 5000, "readingTime": 10,
+                }},
+                "zero-characters": {"modified": millis(3), "value": {
+                    "startedAt": millis(3), "endedAt": millis(3, 10),
+                    "charactersRead": 0, "readingTime": 600,
+                }},
+                "invalid-interval": {"modified": millis(4), "value": {
+                    "startedAt": millis(4), "endedAt": millis(3),
+                    "charactersRead": 100, "readingTime": 600,
+                }},
+                "missing-start": {"modified": millis(4), "value": {
+                    "endedAt": millis(4), "charactersRead": 100, "readingTime": 600,
+                }},
+                "invalid-timestamp": {"modified": millis(4), "value": {
+                    "startedAt": 1e30, "endedAt": 1e30,
+                    "charactersRead": 100, "readingTime": 600,
+                }},
+            }
+            (book_dir / "statistics.json").write_text(json.dumps(sessions), encoding="utf-8")
+            library = load_library(root, ZoneInfo("Asia/Shanghai"))
+            book = library.books[0]
+            self.assertEqual(book.total_characters, 7000)
+            self.assertIsNone(book.last_access)
+            self.assertEqual(book.progress_characters, 3500)
+            self.assertEqual(book.shelves, ["Desktop Shelf"])
+            self.assertEqual(library.shelves, ["Desktop Shelf"])
+            self.assertEqual(book.reading_time_seconds, 4200)
+            self.assertEqual(book.recorded_characters, 400)
+            self.assertEqual(book.active_days, 1)
+            self.assertEqual([s.session_id for s in book.stats], ["morning", "evening"])
+            evening = book.stats[-1]
+            self.assertEqual(evening.date_key, "2026-01-01")
+            self.assertEqual(evening.ended_at.date().isoformat(), "2026-01-02")
+            self.assertEqual(evening.last_modified.minute, 31)
+            payload = build_report_payload(library, "Asia/Shanghai")
+            self.assertEqual(payload["summary"]["totalRecordedCharacters"], 400)
+            self.assertEqual(payload["stats"][-1]["sessionId"], "evening")
+            self.assertIn("+08:00", payload["stats"][-1]["startedAt"])
+            west = load_library(root, ZoneInfo("America/Los_Angeles"))
+            self.assertEqual(west.books[0].stats[0].date_key, "2025-12-31")
+
+    def test_session_day_boundary_at_five(self) -> None:
+        cases = [
+            ("before", "2026-03-01T04:59:59.999+08:00", "2026-02-28"),
+            ("at", "2026-03-01T05:00:00+08:00", "2026-03-01"),
+            ("week-before", "2026-03-02T04:30:00+08:00", "2026-03-01"),
+            ("week-at", "2026-03-02T05:00:00+08:00", "2026-03-02"),
+            ("year-before", "2026-01-01T00:01:00+08:00", "2025-12-31"),
+        ]
+        with self.make_library() as temp:
+            root = Path(temp)
+            sessions = {}
+            for session_id, timestamp, _ in cases:
+                millis = int(datetime.fromisoformat(timestamp).timestamp() * 1000)
+                sessions[session_id] = {"modified": millis + 900000, "value": {
+                    "startedAt": millis, "endedAt": millis + 900000,
+                    "charactersRead": 100, "readingTime": 900,
+                }}
+            (root / "Book A" / "statistics.json").write_text(
+                json.dumps(sessions), encoding="utf-8",
+            )
+            library = load_library(root, ZoneInfo("Asia/Shanghai"))
+            by_id = {s.session_id: s for s in library.stats}
+            for session_id, _, expected in cases:
+                stat = by_id[session_id]
+                self.assertEqual((stat.date_key, stat.week_key, stat.month_key), period_labels(expected))
+            self.assertEqual(by_id["before"].ended_at.date().isoformat(), "2026-03-01")
+            midnight = load_library(root, ZoneInfo("Asia/Shanghai"), day_start_hour=0)
+            midnight_by_id = {s.session_id: s for s in midnight.stats}
+            self.assertEqual(midnight_by_id["before"].date_key, "2026-03-01")
+            self.assertEqual(midnight_by_id["year-before"].date_key, "2026-01-01")
+            self.assertEqual(sum(s.characters_read for s in library.stats), 500)
+            self.assertEqual(sum(s.reading_time_seconds for s in library.stats), 4500)
+            self.assertEqual(
+                sum(s.reading_time_seconds for s in library.stats),
+                sum(s.reading_time_seconds for s in midnight.stats),
+            )
+            self.assertEqual(build_report_payload(library, "Asia/Shanghai")["dayStartHour"], 5)
+            self.assertEqual(build_report_payload(midnight, "Asia/Shanghai")["dayStartHour"], 0)
+            with self.assertRaises(ValueError):
+                load_library(root, ZoneInfo("Asia/Shanghai"), day_start_hour=24)
 
     def test_load_library_handles_missing_files_and_speed(self) -> None:
         with self.make_library() as root:

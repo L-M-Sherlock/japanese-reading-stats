@@ -21,6 +21,8 @@ APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 LOCAL_OUTLIER_WINDOW_SIZE = 15
 LOCAL_OUTLIER_MIN_POINTS = 8
 MIN_READING_TIME_SECONDS = 60
+DEFAULT_BOOKS_DIR = Path("~/Library/Application Support/de.manhhao.hoshi/Books")
+DEFAULT_DAY_START_HOUR = 5
 GITHUB_REPO_URL = "https://github.com/L-M-Sherlock/japanese-reading-stats"
 
 
@@ -38,6 +40,9 @@ class ReadingStat:
     max_reading_speed: float | None = None
     alt_min_reading_speed: float | None = None
     last_modified: datetime | None = None
+    session_id: str = ""
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
     @property
     def reading_time_hours(self) -> float:
@@ -112,6 +117,7 @@ class LibraryData:
     books_dir: Path
     books: list[BookRecord]
     shelves: list[str]
+    day_start_hour: int = DEFAULT_DAY_START_HOUR
 
     @property
     def stats(self) -> list[ReadingStat]:
@@ -125,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--books-dir",
         type=Path,
-        default=Path("~/Library/Application Support/Books"),
+        default=DEFAULT_BOOKS_DIR,
         help="Books data directory. Default: %(default)s",
     )
     parser.add_argument(
@@ -138,6 +144,13 @@ def parse_args() -> argparse.Namespace:
         "--timezone",
         default="",
         help="Timezone for generated timestamps, for example Asia/Shanghai.",
+    )
+    parser.add_argument(
+        "--day-start-hour",
+        type=int,
+        choices=range(24),
+        default=DEFAULT_DAY_START_HOUR,
+        help="Session day boundary in the selected timezone. Default: %(default)s.",
     )
     parser.add_argument(
         "--top",
@@ -441,14 +454,20 @@ def apple_seconds_to_datetime(value: Any, time_zone) -> datetime | None:
     seconds = as_optional_float(value)
     if seconds is None:
         return None
-    return (APPLE_EPOCH + timedelta(seconds=seconds)).astimezone(time_zone)
+    try:
+        return (APPLE_EPOCH + timedelta(seconds=seconds)).astimezone(time_zone)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def unix_ms_to_datetime(value: Any, time_zone) -> datetime | None:
     millis = as_optional_float(value)
     if millis is None:
         return None
-    return datetime.fromtimestamp(millis / 1000, time_zone)
+    try:
+        return datetime.fromtimestamp(millis / 1000, time_zone)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def format_dt(value: datetime | None) -> str:
@@ -470,6 +489,11 @@ def build_shelf_map(books_dir: Path) -> tuple[dict[str, list[str]], list[str]]:
     shelves = read_json(books_dir / "shelves.json", [])
     shelf_map: dict[str, list[str]] = defaultdict(list)
     shelf_names: list[str] = []
+    if isinstance(shelves, dict):
+        return {}, sorted(
+            name for name, change in shelves.items()
+            if isinstance(change, dict) and change.get("value") is not None
+        )
     if not isinstance(shelves, list):
         return {}, []
     for shelf in shelves:
@@ -497,6 +521,7 @@ def load_book(
     shelf_map: dict[str, list[str]],
     time_zone,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
+    day_start_hour: int = DEFAULT_DAY_START_HOUR,
 ) -> BookRecord | None:
     metadata_path = book_dir / "metadata.json"
     if not metadata_path.exists():
@@ -518,7 +543,10 @@ def load_book(
         bookmark = {}
 
     total_characters = as_int(
-        bookinfo.get("characterCount", bookmark.get("characterCount", 0))
+        bookinfo.get(
+            "characterCount",
+            metadata.get("characterCount", bookmark.get("characterCount", 0)),
+        )
     )
     progress = as_optional_float(bookmark.get("progress"))
     chapter_index = (
@@ -526,6 +554,14 @@ def load_book(
         if bookmark.get("chapterIndex") is not None
         else None
     )
+
+    book_shelves = set(shelf_map.get(book_id, []))
+    metadata_shelves = metadata.get("shelves")
+    if isinstance(metadata_shelves, dict):
+        book_shelves.update(
+            name for name, change in metadata_shelves.items()
+            if isinstance(change, dict) and change.get("value") is True
+        )
 
     book = BookRecord(
         id=book_id,
@@ -540,12 +576,12 @@ def load_book(
         bookmark_modified=apple_seconds_to_datetime(
             bookmark.get("lastModified"), time_zone
         ),
-        shelves=sorted(shelf_map.get(book_id, [])),
+        shelves=sorted(book_shelves),
         chapter_count=count_chapters(bookinfo.get("chapterInfo")),
         has_statistics=(book_dir / "statistics.json").exists(),
         has_bookmark=bookmark_path.exists(),
     )
-    book.stats.extend(load_stats(book_dir, book, time_zone, min_reading_seconds))
+    book.stats.extend(load_stats(book_dir, book, time_zone, min_reading_seconds, day_start_hour))
     return book
 
 
@@ -554,10 +590,13 @@ def load_stats(
     book: BookRecord,
     time_zone,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
+    day_start_hour: int = DEFAULT_DAY_START_HOUR,
 ) -> list[ReadingStat]:
     raw_stats = read_json(book_dir / "statistics.json", [])
+    if isinstance(raw_stats, dict):
+        return load_session_stats(raw_stats, book, time_zone, min_reading_seconds, day_start_hour)
     if not isinstance(raw_stats, list):
-        return []
+        raise SystemExit(f"Unsupported statistics format: {book_dir / 'statistics.json'}")
 
     stats: list[ReadingStat] = []
     for item in raw_stats:
@@ -594,11 +633,63 @@ def load_stats(
     return sorted(stats, key=lambda stat: (stat.date_key, stat.title))
 
 
+def load_session_stats(
+    raw_stats: dict[str, Any],
+    book: BookRecord,
+    time_zone,
+    min_reading_seconds: float,
+    day_start_hour: int = DEFAULT_DAY_START_HOUR,
+) -> list[ReadingStat]:
+    stats: list[ReadingStat] = []
+    for session_id, change in raw_stats.items():
+        if not isinstance(change, dict):
+            continue
+        session = change.get("value")
+        # A null value is a synchronized deletion, not a reading session.
+        if not isinstance(session, dict):
+            continue
+        characters = as_float(session.get("charactersRead"))
+        seconds = as_float(session.get("readingTime"))
+        if characters <= 0 or seconds < min_reading_seconds:
+            continue
+        started_ms = as_optional_float(session.get("startedAt"))
+        ended_ms = as_optional_float(session.get("endedAt"))
+        if started_ms is None or ended_ms is None or ended_ms < started_ms:
+            continue
+        started_at = unix_ms_to_datetime(started_ms, time_zone)
+        ended_at = unix_ms_to_datetime(ended_ms, time_zone)
+        modified = unix_ms_to_datetime(change.get("modified"), time_zone)
+        if started_at is None or ended_at is None:
+            continue
+        # Hoshi groups the whole session by its start time minus the reset offset.
+        reading_date = (started_at - timedelta(hours=day_start_hour)).date()
+        day_key, week_key, month_key = period_labels(reading_date.isoformat())
+        stats.append(
+            ReadingStat(
+                book_id=book.id,
+                title=book.title,
+                date_key=day_key,
+                week_key=week_key,
+                month_key=month_key,
+                characters_read=characters,
+                reading_time_seconds=seconds,
+                last_modified=modified,
+                session_id=session_id,
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+        )
+    return sorted(stats, key=lambda stat: (stat.date_key, stat.started_at, stat.session_id))
+
+
 def load_library(
     books_dir: Path,
     time_zone,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
+    day_start_hour: int = DEFAULT_DAY_START_HOUR,
 ) -> LibraryData:
+    if not 0 <= day_start_hour <= 23:
+        raise ValueError("day_start_hour must be between 0 and 23")
     books_dir = books_dir.expanduser().resolve()
     if not books_dir.exists():
         raise SystemExit(f"Books directory not found: {books_dir}")
@@ -607,10 +698,13 @@ def load_library(
     for child in sorted(books_dir.iterdir(), key=lambda path: path.name.casefold()):
         if not child.is_dir():
             continue
-        book = load_book(child, shelf_map, time_zone, min_reading_seconds)
+        book = load_book(child, shelf_map, time_zone, min_reading_seconds, day_start_hour)
         if book is not None:
             books.append(book)
-    return LibraryData(books_dir=books_dir, books=books, shelves=shelf_names)
+    shelf_names = sorted(set(shelf_names) | {name for book in books for name in book.shelves})
+    return LibraryData(
+        books_dir=books_dir, books=books, shelves=shelf_names, day_start_hour=day_start_hour,
+    )
 
 
 def weighted_speed(characters: float, seconds: float) -> float | None:
@@ -827,7 +921,7 @@ def book_to_payload(book: BookRecord) -> dict[str, Any]:
 
 
 def stat_to_payload(stat: ReadingStat) -> dict[str, Any]:
-    return {
+    payload = {
         "bookId": stat.book_id,
         "title": stat.title,
         "date": stat.date_key,
@@ -846,6 +940,13 @@ def stat_to_payload(stat: ReadingStat) -> dict[str, Any]:
         "altMinReadingSpeed": round_or_none(stat.alt_min_reading_speed),
         "lastModified": format_dt(stat.last_modified),
     }
+    if stat.session_id:
+        payload.update(
+            sessionId=stat.session_id,
+            startedAt=stat.started_at.isoformat(),
+            endedAt=stat.ended_at.isoformat(),
+        )
+    return payload
 
 
 def build_report_payload(
@@ -860,6 +961,7 @@ def build_report_payload(
     return {
         "generatedAt": generated_at.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "timezone": time_zone_label,
+        "dayStartHour": library.day_start_hour,
         "topN": top_n,
         "shelves": library.shelves,
         "summary": summary,
@@ -1465,6 +1567,7 @@ def render_html(payload: dict[str, Any]) -> str:
         generated: '生成',
         source: '数据源',
         timezone: '时区',
+        dayStart: '会话换日时间',
         chars: '字',
         charsPerHour: '字/小时',
         noData: '没有匹配数据',
@@ -1503,6 +1606,7 @@ def render_html(payload: dict[str, Any]) -> str:
         generated: 'Generated',
         source: 'Source',
         timezone: 'Timezone',
+        dayStart: 'Session day starts at',
         chars: 'chars',
         charsPerHour: 'chars/hour',
         noData: 'No matching data',
@@ -2005,6 +2109,7 @@ def render_html(payload: dict[str, Any]) -> str:
       const summary = reportData.summary;
       const chips = [
         `${{t('timezone')}}: ${{reportData.timezone}}`,
+        `${{t('dayStart')}}: ${{String(reportData.dayStartHour).padStart(2, '0')}}:00`,
         `${{t('generated')}}: ${{reportData.generatedAt}}`,
         `${{t('range')}}: ${{summary.dateStart || '-'}} - ${{summary.dateEnd || '-'}}`,
       ];
@@ -2299,8 +2404,9 @@ def generate_report(
     time_zone,
     top_n: int = 20,
     min_reading_seconds: float = MIN_READING_TIME_SECONDS,
+    day_start_hour: int = DEFAULT_DAY_START_HOUR,
 ) -> tuple[Path, dict[str, Any]]:
-    library = load_library(books_dir, time_zone, min_reading_seconds)
+    library = load_library(books_dir, time_zone, min_reading_seconds, day_start_hour)
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = build_report_payload(
@@ -2321,6 +2427,7 @@ def main() -> int:
         time_zone,
         top_n=args.top,
         min_reading_seconds=args.min_reading_seconds,
+        day_start_hour=args.day_start_hour,
     )
     summary = payload["summary"]
     print(f"Wrote {output_path}")
